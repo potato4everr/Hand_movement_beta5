@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hand &amp; Oberkörper Tracking</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #000; color: #fff;
+    font-family: system-ui, sans-serif;
+    display: flex; flex-direction: column;
+    align-items: center; min-height: 100vh; padding: 16px;
+  }
+  h1 { font-size: 1.2rem; font-weight: 600; margin-bottom: 4px; }
+  .hint { font-size: 0.85rem; color: #888; margin-bottom: 14px; text-align: center; }
+  .stage { position: relative; width: 100%; max-width: 900px; }
+  video { display: none; }
+  canvas { width: 100%; display: block; border-radius: 6px; background: #111; }
+  .controls { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button {
+    font: inherit; font-size: 0.95rem; padding: 10px 20px;
+    border: 1px solid #555; border-radius: 4px;
+    background: #fff; color: #000; cursor: pointer;
+  }
+  button.secondary { background: transparent; color: #fff; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #status { margin-top: 12px; font-size: 0.85rem; color: #9a9a9a; min-height: 1.2em; text-align: center; }
+  .filter-panel {
+    margin-top: 18px; width: 100%; max-width: 360px;
+    border: 1px solid #333; border-radius: 6px; padding: 14px 16px;
+  }
+  .filter-row { display: flex; align-items: center; gap: 10px; }
+  .filter-row label { font-size: 0.9rem; flex: 1; }
+  .filter-row input[type="checkbox"] { width: 16px; height: 16px; }
+  .slider-row { margin-top: 10px; }
+  .slider-row .slider-label { display: flex; justify-content: space-between; font-size: 0.8rem; color: #aaa; margin-bottom: 4px; }
+  .slider-row input[type="range"] { width: 100%; }
+  .slider-row input[type="range"]:disabled { opacity: 0.35; }
+
+  /* --- 3D Hand Slide-Panel --- */
+  .hand3d-tab {
+    position: fixed; top: 50%; right: 0; transform: translateY(-50%);
+    background: #fff; color: #000; border: none;
+    padding: 14px 8px; font-size: 0.8rem; font-family: inherit;
+    writing-mode: vertical-rl; text-orientation: mixed;
+    border-radius: 6px 0 0 6px; cursor: pointer; z-index: 60;
+    letter-spacing: 0.02em;
+  }
+  .hand3d-panel {
+    position: fixed; top: 0; right: 0; height: 100vh;
+    width: 340px; max-width: 88vw;
+    background: #141414; border-left: 1px solid #333;
+    display: flex; flex-direction: column;
+    transform: translateX(100%);
+    transition: transform 0.28s ease;
+    z-index: 55;
+  }
+  .hand3d-panel.open { transform: translateX(0); }
+  .hand3d-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; border-bottom: 1px solid #2a2a2a;
+  }
+  .hand3d-header span { font-size: 0.95rem; font-weight: 600; }
+  .hand3d-header button {
+    background: transparent; border: none; color: #999;
+    font-size: 1.1rem; padding: 2px 8px; cursor: pointer;
+  }
+  .hand3d-controls {
+    padding: 10px 16px; border-bottom: 1px solid #2a2a2a;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .hand3d-controls .hint { margin: 0; font-size: 0.75rem; color: #777; text-align: left; }
+  #jointsToggle {
+    font-size: 0.8rem; padding: 7px 14px; border-radius: 4px;
+    border: 1px solid #555; background: transparent; color: #fff; cursor: pointer;
+  }
+  #jointsToggle.active { background: #fff; color: #000; }
+  #hand3dCanvas {
+    flex: 1; width: 100%; height: auto; display: block;
+    background: #1c1c1c; border-radius: 0;
+  }
+  .hand3d-empty {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-size: 0.8rem; color: #666; text-align: center; pointer-events: none;
+    width: 80%;
+  }
+</style>
+</head>
+<body>
+
+<h1>Hand &amp; Oberkörper Tracking</h1>
+<div class="hint">Läuft komplett im Browser — es werden keine Bilder hochgeladen.</div>
+
+<div class="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<div class="controls">
+  <button id="startBtn">Kamera starten</button>
+  <button id="stopBtn" class="secondary" disabled>Stoppen</button>
+  <button id="switchBtn" class="secondary">Kamera wechseln</button>
+</div>
+<div id="status">Bereit.</div>
+
+<div class="filter-panel">
+  <div class="filter-row">
+    <label for="filterEnabled">Vibrations-Filter</label>
+    <input type="checkbox" id="filterEnabled" checked>
+  </div>
+  <div class="slider-row">
+    <div class="slider-label"><span>Filterstärke</span><span id="filterVal">0.5</span></div>
+    <input type="range" id="filterStrength" min="0" max="0.9" step="0.05" value="0.5">
+  </div>
+</div>
+
+<button id="hand3dTab" class="hand3d-tab">3D Hand ▸</button>
+<div id="hand3dPanel" class="hand3d-panel">
+  <div class="hand3d-header">
+    <span>3D Hand-Modell</span>
+    <button id="hand3dClose" aria-label="Schließen">✕</button>
+  </div>
+  <div class="hand3d-controls">
+    <span class="hint">Ziehen zum Drehen</span>
+    <button id="jointsToggle" class="active">Gelenke: An</button>
+  </div>
+  <div class="hand3d-controls" style="flex-direction: column; align-items: stretch; gap: 10px;">
+    <div class="filter-row" style="margin: 0;">
+      <label for="humanMode">Menschliche Hand (Kapseln)</label>
+      <input type="checkbox" id="humanMode">
+    </div>
+    <div class="filter-row" style="margin: 0;">
+      <label for="meshMode">Realistische Hand (Mesh)</label>
+      <input type="checkbox" id="meshMode">
+    </div>
+    <div class="filter-row" style="margin: 0;">
+      <label for="armMode">Hand + Arm</label>
+      <input type="checkbox" id="armMode">
+    </div>
+  </div>
+  <div style="position: relative; flex: 1;">
+    <canvas id="hand3dCanvas"></canvas>
+    <div class="hand3d-empty" id="hand3dEmpty">Keine Hand erkannt —<br>Kamera starten und Hand zeigen</div>
+  </div>
+</div>
+
+<script type="module">
+import {
+  FilesetResolver, HandLandmarker, PoseLandmarker
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+// --- Verbindungsdaten (1:1 aus dem Python-Code übernommen) ---
+const HAND_CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[0,17],[17,18],[18,19],[19,20]
+];
+const UPPER_BODY_CONNECTIONS = [
+  [11,12],
+  [11,13],[13,15],
+  [12,14],[14,16],
+  [11,23],[12,24],[23,24]
+];
+const KEY_POSE_LANDMARKS = [11,12,13,14,15,16,23,24];
+
+// Fingerketten für den "Realistische Hand"-Modus: jeweils vom Handgelenk (0)
+// bis zur Fingerspitze, mit passendem Radius pro Gelenkpunkt (verjüngend).
+const FINGER_CHAINS = {
+  thumb:  { idx: [0, 1, 2, 3, 4],    radii: [0.16, 0.13, 0.10, 0.075, 0.05] },
+  index:  { idx: [0, 5, 6, 7, 8],    radii: [0.15, 0.10, 0.075, 0.06, 0.04] },
+  middle: { idx: [0, 9, 10, 11, 12], radii: [0.15, 0.10, 0.08, 0.06, 0.04] },
+  ring:   { idx: [0, 13, 14, 15, 16], radii: [0.14, 0.095, 0.07, 0.055, 0.038] },
+  pinky:  { idx: [0, 17, 18, 19, 20], radii: [0.12, 0.08, 0.06, 0.048, 0.035] },
+};
+
+// OpenCV nutzt BGR, im Browser ist es RGB — hier die passenden Farben:
+const COL_BODY_LINE = "#0000ff";   // Oberkörper-Linien (blau)
+const COL_BODY_DOT  = "#ffff00";   // Oberkörper-Punkte (gelb)
+const COL_HAND_LINE = "#ff0000";   // Hand-Linien (rot)
+const COL_HAND_DOT  = "#00ff00";   // Hand-Punkte (grün)
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const startBtn = document.getElementById("startBtn");
+const stopBtn = document.getElementById("stopBtn");
+const switchBtn = document.getElementById("switchBtn");
+const statusEl = document.getElementById("status");
+const filterEnabledEl = document.getElementById("filterEnabled");
+const filterStrengthEl = document.getElementById("filterStrength");
+const filterValEl = document.getElementById("filterVal");
+
+let smoothPoseLandmarks = null;
+let smoothHandLandmarks = null;
+
+filterStrengthEl.addEventListener("input", () => {
+  filterValEl.textContent = parseFloat(filterStrengthEl.value).toFixed(2);
+});
+filterEnabledEl.addEventListener("change", () => {
+  filterStrengthEl.disabled = !filterEnabledEl.checked;
+  // Beim Umschalten alten Glättungs-Zustand verwerfen, damit die Figur
+  // nicht zum vorherigen Punkt zurückspringt.
+  smoothPoseLandmarks = null;
+  smoothHandLandmarks = null;
+});
+
+// Gewichteter gleitender Mittelwert (Low-Pass-Filter) pro Landmarke:
+// neuer Wert = alpha * alter geglätteter Wert + (1-alpha) * roher Messwert.
+// Höheres alpha = ruhiger, aber etwas träger; niedrigeres alpha = direkter,
+// aber mehr sichtbares Zittern.
+function smoothLandmarkList(rawList, prevList, alpha) {
+  if (!prevList || prevList.length !== rawList.length) {
+    return rawList.map(lms => lms.map(lm => ({ x: lm.x, y: lm.y, z: lm.z ?? 0 })));
+  }
+  return rawList.map((lms, i) => {
+    const prevLms = prevList[i];
+    if (!prevLms || prevLms.length !== lms.length) {
+      return lms.map(lm => ({ x: lm.x, y: lm.y, z: lm.z ?? 0 }));
+    }
+    return lms.map((lm, j) => ({
+      x: alpha * prevLms[j].x + (1 - alpha) * lm.x,
+      y: alpha * prevLms[j].y + (1 - alpha) * lm.y,
+      z: alpha * (prevLms[j].z ?? 0) + (1 - alpha) * (lm.z ?? 0),
+    }));
+  });
+}
+
+let handLandmarker = null;
+let poseLandmarker = null;
+let stream = null;
+let running = false;
+let rafId = null;
+let lastVideoTime = -1;
+let facingMode = "user";
+
+function setStatus(msg) { statusEl.textContent = msg; }
+
+// ================== 3D Hand-Modell (Blender-Edit-Mode-Stil) ==================
+const hand3dTab = document.getElementById("hand3dTab");
+const hand3dPanel = document.getElementById("hand3dPanel");
+const hand3dClose = document.getElementById("hand3dClose");
+const hand3dCanvas = document.getElementById("hand3dCanvas");
+const hand3dEmpty = document.getElementById("hand3dEmpty");
+const jointsToggle = document.getElementById("jointsToggle");
+const humanModeEl = document.getElementById("humanMode");
+const meshModeEl = document.getElementById("meshMode");
+const armModeEl = document.getElementById("armMode");
+
+let hand3d = null;         // { renderer, scene, camera, controls, bones, joints }
+let jointsVisible = true;
+let displayMode = "skeleton"; // "skeleton" | "capsules" | "mesh"
+let armMode = false;
+let hand3dRafId = null;
+
+function initHand3D() {
+  if (hand3d) return;
+
+  const renderer = new THREE.WebGLRenderer({ canvas: hand3dCanvas, antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1c1c1c);
+
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(0, 0.3, 5.5);
+
+  // Blender-artige neutrale Beleuchtung: kein Farbton, nur helles Grau-Material
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const key = new THREE.DirectionalLight(0xffffff, 0.9);
+  key.position.set(3, 5, 4);
+  scene.add(key);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+  fill.position.set(-4, -2, -3);
+  scene.add(fill);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.target.set(0, 0, 0);
+
+  // Bodenraster wie im Blender-Viewport
+  const grid = new THREE.GridHelper(6, 12, 0x3a3a3a, 0x2a2a2a);
+  grid.position.y = -1.6;
+  scene.add(grid);
+
+  // --- Knochen: helle graue Linien zwischen den 21 Landmarken (Skelett-Modus) ---
+  const boneMat = new THREE.LineBasicMaterial({ color: 0xd8d8d8, linewidth: 2 });
+  const bonePositions = new Float32Array(HAND_CONNECTIONS.length * 2 * 3);
+  const boneGeom = new THREE.BufferGeometry();
+  boneGeom.setAttribute("position", new THREE.BufferAttribute(bonePositions, 3));
+  const bones = new THREE.LineSegments(boneGeom, boneMat);
+  scene.add(bones);
+
+  // --- "Menschliche Hand": Kapsel-Zylinder statt Linien, orientieren sich
+  // pro Frame an genau denselben zwei Gelenkpunkten wie die Linien oben. ---
+  const fleshMat = new THREE.MeshStandardMaterial({ color: 0xd8d0c6, roughness: 0.65, metalness: 0.03 });
+  const cylGeom = new THREE.CylinderGeometry(1, 1, 1, 14);
+  const PALM_CONNS = new Set(["0,5", "5,9", "9,13", "13,17", "0,17"]);
+  const fleshMeshes = HAND_CONNECTIONS.map(([a, b]) => {
+    const isPalm = PALM_CONNS.has(a + "," + b) || PALM_CONNS.has(b + "," + a);
+    const m = new THREE.Mesh(cylGeom, fleshMat);
+    m.userData.radius = isPalm ? 0.17 : 0.09;
+    m.userData.isPalm = isPalm;
+    m.visible = false;
+    scene.add(m);
+    return m;
+  });
+
+  // --- Gelenke: kleine hellgraue Kugeln, ein/ausblendbar ---
+  const jointMat = new THREE.MeshStandardMaterial({ color: 0xeaeaea, roughness: 0.6, metalness: 0.05 });
+  const jointGeom = new THREE.SphereGeometry(0.045, 12, 12);
+  const jointGroup = new THREE.Group();
+  const joints = [];
+  for (let i = 0; i < 21; i++) {
+    const m = new THREE.Mesh(jointGeom, jointMat);
+    // Handwurzel (0) und Fingerspitzen etwas größer für Orientierung
+    if (i === 0) m.scale.setScalar(1.6);
+    jointGroup.add(m);
+    joints.push(m);
+  }
+  scene.add(jointGroup);
+
+  // --- Arm: Unterarm (Handgelenk-Ellbogen) und Oberarm (Ellbogen-Schulter),
+  // nutzt dieselben Positions-/Ausrichtungs-Helfer wie die Hand-Knochen. ---
+  const armGroup = new THREE.Group();
+  armGroup.visible = false;
+  scene.add(armGroup);
+
+  const armBonePositions = new Float32Array(2 * 2 * 3);
+  const armBoneGeom = new THREE.BufferGeometry();
+  armBoneGeom.setAttribute("position", new THREE.BufferAttribute(armBonePositions, 3));
+  const armBones = new THREE.LineSegments(armBoneGeom, boneMat);
+  armGroup.add(armBones);
+
+  const armFleshMeshes = [0, 1].map(() => {
+    const m = new THREE.Mesh(cylGeom, fleshMat);
+    m.userData.radius = 0.22;
+    m.visible = false;
+    armGroup.add(m);
+    return m;
+  });
+
+  const armJointGroup = new THREE.Group();
+  const armJoints = [0, 1].map(() => {
+    const m = new THREE.Mesh(jointGeom, jointMat);
+    m.scale.setScalar(2.0);
+    armJointGroup.add(m);
+    return m;
+  });
+  armGroup.add(armJointGroup);
+
+  // --- "Realistische Hand": pro Finger eine sich verjüngende Röhre, die
+  // jeden Frame neu über die aktuellen Gelenkpunkte gelegt wird (siehe
+  // buildTaperedTube und FINGER_CHAINS weiter oben). Startpunkt ist jeweils
+  // das Handgelenk, damit die Röhre sanft in die Handfläche übergeht.
+  const fingerMat = new THREE.MeshStandardMaterial({ color: 0xd8d0c6, roughness: 0.65, metalness: 0.03, side: THREE.DoubleSide });
+  const fingerMeshes = {};
+  for (const name in FINGER_CHAINS) {
+    const m = new THREE.Mesh(new THREE.BufferGeometry(), fingerMat);
+    m.visible = false;
+    scene.add(m);
+    fingerMeshes[name] = m;
+  }
+
+  function renderTick() {
+    if (!hand3dPanel.classList.contains("open")) return;
+    controls.update();
+    renderer.render(scene, camera);
+    hand3dRafId = requestAnimationFrame(renderTick);
+  }
+
+  function resize() {
+    const w = hand3dCanvas.clientWidth, h = hand3dCanvas.clientHeight;
+    if (w === 0 || h === 0) return;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+
+  new ResizeObserver(resize).observe(hand3dCanvas);
+
+  hand3d = {
+    renderer, scene, camera, controls, resize, renderTick,
+    bones, fleshMeshes, joints, jointGroup, fingerMeshes,
+    armGroup, armBones, armFleshMeshes, armJoints, armJointGroup,
+  };
+  updateHand3DVisibility();
+}
+
+// Sichtbarkeit der Skelett-/Fleisch-/Arm-Gruppen je nach den drei Schaltern
+// (Gelenke, Menschliche Hand, Arm) konsistent setzen.
+function updateHand3DVisibility() {
+  if (!hand3d) return;
+  hand3d.bones.visible = displayMode === "skeleton";
+  hand3d.fleshMeshes.forEach(m => {
+    m.visible = m.userData.isPalm
+      ? displayMode !== "skeleton"   // Handfläche bleibt in beiden Modi eine Kapsel-Form
+      : displayMode === "capsules";  // Finger-Kapseln nur im reinen Kapsel-Modus
+  });
+  Object.values(hand3d.fingerMeshes).forEach(m => m.visible = displayMode === "mesh");
+  hand3d.jointGroup.visible = jointsVisible;
+
+  hand3d.armGroup.visible = armMode;
+  hand3d.armBones.visible = armMode && displayMode === "skeleton";
+  hand3d.armFleshMeshes.forEach(m => m.visible = armMode && displayMode !== "skeleton");
+  hand3d.armJointGroup.visible = armMode && jointsVisible;
+}
+
+// Positioniert/streckt/dreht einen Zylinder-Mesh so, dass er exakt zwei
+// Gelenkpunkte verbindet - dieselbe Technik für Hand- und Arm-Kapseln.
+function alignCylinder(mesh, p1, p2) {
+  const dir = new THREE.Vector3().subVectors(p2, p1);
+  const len = dir.length() || 0.0001;
+  mesh.position.copy(p1).addScaledVector(dir, 0.5);
+  const r = mesh.userData.radius;
+  mesh.scale.set(r, len, r);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+}
+
+// Erzeugt eine sich verjüngende Röhre entlang einer Kette von Punkten
+// (z.B. die 5 Gelenke eines Fingers) mit je eigenem Radius pro Punkt.
+// Nutzt ein "Rotation Minimizing Frame", damit sich der Ring-Querschnitt
+// beim Entlanglaufen der Kette nicht verdreht (kein Twisting-Artefakt).
+// Bewusst einfach gehalten (gerade Segmente, kein Spline) - low Detail.
+function buildTaperedTube(points, radii, radialSegments) {
+  const n = points.length;
+  const tangents = [];
+  for (let i = 0; i < n; i++) {
+    if (i === 0) tangents.push(new THREE.Vector3().subVectors(points[1], points[0]).normalize());
+    else if (i === n - 1) tangents.push(new THREE.Vector3().subVectors(points[i], points[i - 1]).normalize());
+    else tangents.push(new THREE.Vector3().subVectors(points[i + 1], points[i - 1]).normalize());
+  }
+  let ref = new THREE.Vector3(0, 1, 0);
+  if (Math.abs(ref.dot(tangents[0])) > 0.9) ref = new THREE.Vector3(1, 0, 0);
+  ref.sub(tangents[0].clone().multiplyScalar(ref.dot(tangents[0]))).normalize();
+  const normals = [ref];
+  for (let i = 1; i < n; i++) {
+    const prevT = tangents[i - 1], curT = tangents[i];
+    const axis = new THREE.Vector3().crossVectors(prevT, curT);
+    let nrm = normals[i - 1].clone();
+    if (axis.length() > 1e-6) {
+      const angle = Math.acos(THREE.MathUtils.clamp(prevT.dot(curT), -1, 1));
+      nrm.applyAxisAngle(axis.normalize(), angle);
+    }
+    nrm.sub(curT.clone().multiplyScalar(nrm.dot(curT))).normalize();
+    normals.push(nrm);
+  }
+
+  const positions = [];
+  for (let i = 0; i < n; i++) {
+    const t = tangents[i], nrm = normals[i];
+    const b = new THREE.Vector3().crossVectors(t, nrm).normalize();
+    for (let j = 0; j < radialSegments; j++) {
+      const theta = (j / radialSegments) * Math.PI * 2;
+      const cx = Math.cos(theta) * radii[i], cy = Math.sin(theta) * radii[i];
+      positions.push(
+        points[i].x + nrm.x * cx + b.x * cy,
+        points[i].y + nrm.y * cx + b.y * cy,
+        points[i].z + nrm.z * cx + b.z * cy
+      );
+    }
+  }
+  const indices = [];
+  for (let i = 0; i < n - 1; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const a = i * radialSegments + j;
+      const b2 = i * radialSegments + (j + 1) % radialSegments;
+      const c = (i + 1) * radialSegments + j;
+      const d = (i + 1) * radialSegments + (j + 1) % radialSegments;
+      indices.push(a, c, b2, b2, c, d);
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.setIndex(indices);
+  geom.computeVertexNormals();
+  return geom;
+}
+
+// Landmarken (x,y roh 0..1, z relative Tiefe) auf zentrierte 3D-Koordinaten
+// abbilden - Handwurzel als Ursprung, y gespiegelt (Bild-y zeigt nach unten,
+// Three.js-y nach oben). poseLms/side (optional) liefern Schulter/Ellbogen
+// für den Arm-Modus - dieselbe Bild-normierte Koordinatenbasis wie die Hand,
+// daher direkt vergleichbar ohne separate Umrechnung.
+function updateHand3D(lms, poseLms, side) {
+  if (!hand3d) return;
+  const S = 5.5;
+  const wrist = lms[0];
+  const pts = lms.map(lm => new THREE.Vector3(
+    (lm.x - wrist.x) * S,
+    -(lm.y - wrist.y) * S,
+    -(lm.z ?? 0) * S
+  ));
+
+  hand3d.joints.forEach((m, i) => m.position.copy(pts[i]));
+
+  const posAttr = hand3d.bones.geometry.attributes.position;
+  HAND_CONNECTIONS.forEach(([a, b], i) => {
+    posAttr.setXYZ(i * 2, pts[a].x, pts[a].y, pts[a].z);
+    posAttr.setXYZ(i * 2 + 1, pts[b].x, pts[b].y, pts[b].z);
+    const mesh = hand3d.fleshMeshes[i];
+    if (mesh.userData.isPalm ? displayMode !== "skeleton" : displayMode === "capsules") {
+      alignCylinder(mesh, pts[a], pts[b]);
+    }
+  });
+  posAttr.needsUpdate = true;
+  hand3d.bones.geometry.computeBoundingSphere();
+
+  // --- Realistische Hand: pro Finger eine neue verjüngte Röhre über die
+  // aktuellen Gelenkpunkte legen. Alte Geometrie wird dabei entsorgt
+  // (dispose), damit kein GPU-Speicher anwächst.
+  if (displayMode === "mesh") {
+    for (const name in FINGER_CHAINS) {
+      const { idx, radii } = FINGER_CHAINS[name];
+      const chainPts = idx.map(i => pts[i]);
+      const mesh = hand3d.fingerMeshes[name];
+      const oldGeom = mesh.geometry;
+      mesh.geometry = buildTaperedTube(chainPts, radii, 6);
+      oldGeom.dispose();
+    }
+  }
+
+  // --- Arm (optional): Schulter/Ellbogen relativ zum Handgelenk-Landmark
+  // in derselben Bild-Koordinatenbasis, damit Hand und Arm zueinander passen.
+  if (armMode) {
+    const idx = side === "Left" ? { shoulder: 11, elbow: 13, wrist: 15 }
+                                 : { shoulder: 12, elbow: 14, wrist: 16 };
+    const pw = poseLms && poseLms[idx.wrist], pe = poseLms && poseLms[idx.elbow], ps = poseLms && poseLms[idx.shoulder];
+    if (pw && pe && ps) {
+      const toScene = p => new THREE.Vector3(
+        (p.x - pw.x) * S, -(p.y - pw.y) * S, -(p.z ?? 0) * S
+      );
+      const elbowPt = toScene(pe);
+      const shoulderPt = toScene(ps);
+      hand3d.armJoints[0].position.copy(elbowPt);
+      hand3d.armJoints[1].position.copy(shoulderPt);
+
+      const armPosAttr = hand3d.armBones.geometry.attributes.position;
+      armPosAttr.setXYZ(0, pts[0].x, pts[0].y, pts[0].z);
+      armPosAttr.setXYZ(1, elbowPt.x, elbowPt.y, elbowPt.z);
+      armPosAttr.setXYZ(2, elbowPt.x, elbowPt.y, elbowPt.z);
+      armPosAttr.setXYZ(3, shoulderPt.x, shoulderPt.y, shoulderPt.z);
+      armPosAttr.needsUpdate = true;
+      hand3d.armBones.geometry.computeBoundingSphere();
+
+      if (displayMode !== "skeleton") {
+        alignCylinder(hand3d.armFleshMeshes[0], pts[0], elbowPt);
+        alignCylinder(hand3d.armFleshMeshes[1], elbowPt, shoulderPt);
+      }
+      hand3d.armGroup.visible = true;
+    } else {
+      hand3d.armGroup.visible = false;
+    }
+  }
+
+  hand3dEmpty.style.display = "none";
+}
+
+function markHand3DEmpty() {
+  if (hand3dEmpty) hand3dEmpty.style.display = "block";
+}
+
+function openHand3DPanel() {
+  hand3dPanel.classList.add("open");
+  initHand3D();
+  requestAnimationFrame(() => {
+    hand3d.resize();
+    if (!hand3dRafId) hand3d.renderTick();
+  });
+}
+function closeHand3DPanel() {
+  hand3dPanel.classList.remove("open");
+  if (hand3dRafId) { cancelAnimationFrame(hand3dRafId); hand3dRafId = null; }
+}
+
+hand3dTab.addEventListener("click", openHand3DPanel);
+hand3dClose.addEventListener("click", closeHand3DPanel);
+jointsToggle.addEventListener("click", () => {
+  jointsVisible = !jointsVisible;
+  updateHand3DVisibility();
+  jointsToggle.textContent = "Gelenke: " + (jointsVisible ? "An" : "Aus");
+  jointsToggle.classList.toggle("active", jointsVisible);
+});
+function recomputeDisplayMode() {
+  displayMode = meshModeEl.checked ? "mesh" : (humanModeEl.checked ? "capsules" : "skeleton");
+  updateHand3DVisibility();
+}
+humanModeEl.addEventListener("change", () => {
+  if (humanModeEl.checked) meshModeEl.checked = false; // gegenseitig ausschließend
+  recomputeDisplayMode();
+});
+meshModeEl.addEventListener("change", () => {
+  if (meshModeEl.checked) humanModeEl.checked = false; // gegenseitig ausschließend
+  recomputeDisplayMode();
+});
+armModeEl.addEventListener("change", () => {
+  armMode = armModeEl.checked;
+  updateHand3DVisibility();
+});
+// ================== Ende 3D Hand-Modell ==================
+
+// --- Modelle laden (entspricht create_from_options im Python-Code) ---
+async function loadModels() {
+  setStatus("Modelle werden geladen …");
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+  );
+
+  handLandmarker = await HandLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+      delegate: "GPU"
+    },
+    runningMode: "VIDEO",
+    numHands: 2
+  });
+
+  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      delegate: "GPU"
+    },
+    runningMode: "VIDEO",
+    numPoses: 1
+  });
+
+  setStatus("Modelle geladen.");
+}
+
+// --- Kamera starten (entspricht cv2.VideoCapture) ---
+async function startCamera() {
+  startBtn.disabled = true;
+  try {
+    if (!handLandmarker || !poseLandmarker) await loadModels();
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    running = true;
+    stopBtn.disabled = false;
+    setStatus("Tracking läuft.");
+    renderLoop();
+  } catch (err) {
+    startBtn.disabled = false;
+    setStatus("Fehler: " + err.message + " — Kamerazugriff erlaubt? Seite über HTTPS geöffnet?");
+  }
+}
+
+function stopCamera() {
+  running = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  smoothPoseLandmarks = null;
+  smoothHandLandmarks = null;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  setStatus("Gestoppt.");
+}
+
+// --- Hauptschleife (entspricht der while-Schleife im Python-Code) ---
+function renderLoop() {
+  if (!running) return;
+
+  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const ts = performance.now();
+
+    // Spiegelbild wie bei einer Selfie-Kamera
+    ctx.save();
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    const w = canvas.width, h = canvas.height;
+    const mx = x => w - x * w;   // gespiegelte x-Koordinate
+    const my = y => y * h;
+
+    // 1. Oberkörper
+    const poseRes = poseLandmarker.detectForVideo(video, ts);
+    const poseRaw = poseRes.landmarks || [];
+    const filterOn = filterEnabledEl.checked;
+    const alpha = parseFloat(filterStrengthEl.value);
+
+    smoothPoseLandmarks = filterOn
+      ? smoothLandmarkList(poseRaw, smoothPoseLandmarks, alpha)
+      : poseRaw;
+
+    for (const lms of smoothPoseLandmarks) {
+      ctx.strokeStyle = COL_BODY_LINE;
+      ctx.lineWidth = 3;
+      for (const [a, b] of UPPER_BODY_CONNECTIONS) {
+        if (!lms[a] || !lms[b]) continue;
+        ctx.beginPath();
+        ctx.moveTo(mx(lms[a].x), my(lms[a].y));
+        ctx.lineTo(mx(lms[b].x), my(lms[b].y));
+        ctx.stroke();
+      }
+      ctx.fillStyle = COL_BODY_DOT;
+      for (const i of KEY_POSE_LANDMARKS) {
+        if (!lms[i]) continue;
+        ctx.beginPath();
+        ctx.arc(mx(lms[i].x), my(lms[i].y), 7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // 2. Hände
+    const handRes = handLandmarker.detectForVideo(video, ts);
+    const handRaw = handRes.landmarks || [];
+
+    smoothHandLandmarks = filterOn
+      ? smoothLandmarkList(handRaw, smoothHandLandmarks, alpha)
+      : handRaw;
+
+    for (const lms of smoothHandLandmarks) {
+      ctx.strokeStyle = COL_HAND_LINE;
+      ctx.lineWidth = 3;
+      for (const [a, b] of HAND_CONNECTIONS) {
+        ctx.beginPath();
+        ctx.moveTo(mx(lms[a].x), my(lms[a].y));
+        ctx.lineTo(mx(lms[b].x), my(lms[b].y));
+        ctx.stroke();
+      }
+      ctx.fillStyle = COL_HAND_DOT;
+      for (const lm of lms) {
+        ctx.beginPath();
+        ctx.arc(mx(lm.x), my(lm.y), 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // 3D-Panel aktualisieren, falls geöffnet (spart Rechenleistung wenn zu)
+    if (hand3dPanel.classList.contains("open")) {
+      if (smoothHandLandmarks.length > 0) {
+        const side = handRes.handedness?.[0]?.[0]?.categoryName || "Right";
+        updateHand3D(smoothHandLandmarks[0], smoothPoseLandmarks[0], side);
+      } else {
+        markHand3DEmpty();
+      }
+    }
+  }
+
+  rafId = requestAnimationFrame(renderLoop);
+}
+
+startBtn.addEventListener("click", startCamera);
+stopBtn.addEventListener("click", stopCamera);
+switchBtn.addEventListener("click", async () => {
+  facingMode = facingMode === "user" ? "environment" : "user";
+  if (running) { stopCamera(); await startCamera(); }
+});
+</script>
+
+</body>
+</html>
